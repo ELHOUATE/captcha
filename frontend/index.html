@@ -1,110 +1,61 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mon CAPTCHA v2</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<title>Create Account</title>
+<link rel="stylesheet" href="/frontend/style.css">
 </head>
+
 <body>
 
-  <div class="page">
-    <div class="form-card">
-      <div class="form-header">
-        <div class="logo">⬡</div>
-        <h1>Créer un compte</h1>
-        <p>Rejoins notre plateforme sécurisée</p>
-      </div>
+<div class="container">
 
-      <div class="fields">
-        <div class="field">
-          <label>Prénom</label>
-          <input type="text" placeholder="Jean">
-        </div>
-        <div class="field">
-          <label>Nom</label>
-          <input type="text" placeholder="Dupont">
-        </div>
-        <div class="field">
-          <label>Adresse e-mail</label>
-          <input type="email" placeholder="jean@exemple.com">
-        </div>
-        <div class="field">
-          <label>Mot de passe</label>
-          <input type="password" placeholder="••••••••">
-        </div>
-      </div>
+<h2>Create Account</h2>
 
-      <!-- Zone CAPTCHA -->
-      <div class="captcha-widget" id="captchaWidget" onclick="openCaptcha()">
-        <div class="captcha-check" id="captchaCheck">
-          <div class="checkbox" id="checkbox"></div>
-        </div>
-        <span class="captcha-text" id="captchaText">Je ne suis pas un robot</span>
-        <div class="captcha-brand">
-          <span class="brand-icon">⬡</span>
-          <span class="brand-name">CAPTCHA</span>
-          <span class="brand-version">v2</span>
-        </div>
-      </div>
+<form id="mainForm">
+  <input type="text" placeholder="First name" required>
+  <input type="text" placeholder="Last name" required>
+  <input type="email" placeholder="Email" required>
 
-      <button class="submit-btn" id="submitBtn" disabled onclick="submitForm()">
-        <span>Créer mon compte</span>
-        <span class="btn-arrow">→</span>
-      </button>
+  <div class="recaptcha-box" id="recaptchaBox">
+    <div class="checkbox" id="checkbox"></div>
 
-      <div class="success-banner" id="successBanner">
-        <span>✓</span> Compte créé avec succès !
-      </div>
+    <div class="recaptcha-text">
+      I'm not a robot
+    </div>
+
+    <div class="recaptcha-logo">
+      <img src="https://www.gstatic.com/recaptcha/api2/logo_48.png" alt="reCAPTCHA logo">
+      <div class="recaptcha-small">reCAPTCHA</div>
+      <div class="recaptcha-terms">Privacy - Terms</div>
     </div>
   </div>
 
-  <!-- Modal CAPTCHA -->
-  <div class="modal-overlay" id="modalOverlay" onclick="handleOverlayClick(event)">
-    <div class="modal" id="modal">
+  <button id="submitBtn" disabled>Create Account</button>
+</form>
 
-      <div class="modal-header">
-        <div class="modal-header-text">
-          <p class="modal-subtitle">Sélectionnez toutes les images avec</p>
-          <h2 class="modal-title" id="modalTitle">une voiture</h2>
-        </div>
-        <button class="modal-close" onclick="closeModal()">✕</button>
-      </div>
+</div>
 
-      <!-- Grille 3x3 -->
-      <div class="img-grid" id="imgGrid">
-        <!-- Cases générées par JS -->
-      </div>
-
-      <div class="modal-footer">
-        <div class="footer-left">
-          <button class="icon-btn" onclick="refreshCaptcha()" title="Nouvelles images">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10"/>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-          </button>
-          <button class="icon-btn" title="Mode audio">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-            </svg>
-          </button>
-        </div>
-
-        <div class="footer-brand">⬡ CAPTCHA v2</div>
-
-        <button class="verify-btn" id="verifyBtn" onclick="verifyCaptcha()">
-          VÉRIFIER
-        </button>
-      </div>
-
-      <div class="modal-error" id="modalError"></div>
+<div class="captcha-popup" id="captchaPopup" hidden>
+  <div class="captcha-card">
+    <div class="captcha-header">
+      <span>Select all images with</span>
+      <strong id="targetClass">cars</strong>
     </div>
-  </div>
 
-  <script src="script.js"></script>
+    <div class="captcha-grid" id="captchaGrid"></div>
+
+    <div class="captcha-footer">
+      <button id="refreshBtn" class="icon-btn" type="button">↻</button>
+      <button id="verifyBtn" class="verify-btn" type="button">VERIFY</button>
+    </div>
+
+    <p id="errorMsg" class="error-msg"></p>
+  </div>
+</div>
+
+<script src="/frontend/script.js"></script>
+
 </body>
 </html>
