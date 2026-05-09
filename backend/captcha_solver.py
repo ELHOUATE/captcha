@@ -13,7 +13,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from PIL import Image
 
-from backend.classifiers.best_model_loader import BestClassifierLoader
+from classifiers.best_model_loader import BestClassifierLoader
 
 
 class CaptchaSolver:
