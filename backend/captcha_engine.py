@@ -4,16 +4,172 @@ import random
 import uuid
 from io import BytesIO
 from pathlib import Path
+
+import numpy as np
 from PIL import Image
+import onnxruntime as ort
 
-from config import IMAGE_DIR, MODEL_MAP, CONF_THRESHOLD
+from config import IMAGE_DIR, MODEL_MAP, CONF_THRESHOLD, get_threshold
 
-IMG_SIZE = 150
-TILE_SIZE = 120
-GRID_COLS_4X4 = 4
-GRID_ROWS_4X4 = 4
+
+# Taille pour l'affichage dans le frontend
+DISPLAY_SIZE = 640
+# Taille pour le modèle (ne pas changer, les modèles sont entraînés sur 640)
+MODEL_SIZE = 640
+
+MAX_GENERATION_ATTEMPTS = 5
 
 CLASSES = list(MODEL_MAP.keys())
+
+
+class BoxesWrapper:
+    """Wrapper pour les boîtes de détection compatibles avec l'interface YOLO"""
+    
+    def __init__(self, boxes_data):
+        self._boxes = boxes_data
+        self.conf = np.array([b['conf'] for b in boxes_data]) if boxes_data else np.array([])
+        self.cls = np.array([b['cls'] for b in boxes_data]) if boxes_data else np.array([])
+        self.xyxy = np.array([b['xyxy'] for b in boxes_data]) if boxes_data else np.array([])
+    
+    def __len__(self):
+        return len(self._boxes)
+    
+    def __iter__(self):
+        return iter(self._boxes)
+
+
+class ONNXRuntimeResults:
+    """Wrapper pour les résultats ONNX compatibles avec l'interface YOLO"""
+    
+    def __init__(self, outputs, arch: str, class_id: int, conf_threshold: float):
+        self.outputs = outputs
+        self.arch = arch
+        self.class_id = class_id
+        self.conf_threshold = conf_threshold
+        self.boxes = self._parse_outputs()
+    
+    def _parse_outputs(self):
+        """Parse les sorties ONNX selon l'architecture"""
+        if self.arch == "yolo":
+            return self._parse_yolo_output()
+        else:  # rtdetr
+            return self._parse_rtdetr_output()
+    
+    def _parse_yolo_output(self):
+        """Parse la sortie YOLO standard [1, 300, 6] avec sigmoïde"""
+        output = self.outputs[0]
+        
+        boxes_data = []
+        
+        # Format YOLO: [1, 300, 6] = [x1, y1, x2, y2, raw_conf, class_id]
+        if len(output.shape) == 3 and output.shape[2] == 6:
+            detections = output[0]
+            
+            for det in detections:
+                # Appliquer la sigmoïde pour transformer en probabilité (0-1)
+                raw_conf = float(det[4])
+                conf = 1.0 / (1.0 + np.exp(-raw_conf))
+                
+                if conf < self.conf_threshold:
+                    continue
+                
+                class_id = int(det[5])
+                
+                if self.class_id is not None and class_id != self.class_id:
+                    continue
+                
+                x1, y1, x2, y2 = det[0:4]
+                
+                boxes_data.append({
+                    'xyxy': [float(x1), float(y1), float(x2), float(y2)],
+                    'conf': conf,
+                    'cls': class_id
+                })
+        
+        return BoxesWrapper(boxes_data) if boxes_data else None
+    
+    def _parse_rtdetr_output(self):
+        """Parse la sortie RT-DETR (format [1, 300, 5])"""
+        output = self.outputs[0]
+    
+        boxes_data = []
+    
+        if len(output.shape) == 3 and output.shape[2] == 5:
+            detections = output[0]
+        
+            for det in detections:
+                conf = float(det[4])
+            
+                # Appliquer un seuil plus strict selon la classe
+                if self.class_id == 2:  # car
+                    # Les car ont souvent des faux positifs sur bus/truck
+                    final_threshold = max(self.conf_threshold, 0.90)
+                elif self.class_id == 7:  # truck
+                    # Les truck se font confondre avec bus
+                    final_threshold = max(self.conf_threshold, 0.92)
+                elif self.class_id == 5:  # bus
+                    final_threshold = max(self.conf_threshold, 0.88)
+                else:
+                    final_threshold = self.conf_threshold
+            
+                if conf > final_threshold:
+                    boxes_data.append({
+                        'xyxy': [float(det[0]), float(det[1]), float(det[2]), float(det[3])],
+                        'conf': conf,
+                        'cls': self.class_id if self.class_id is not None else 0
+                    })
+    
+        return BoxesWrapper(boxes_data) if boxes_data else None
+
+
+class ONNXModelWrapper:
+    """Wrapper unifié pour les modèles ONNX (RT-DETR et YOLO)"""
+    
+    def __init__(self, model_path: str, arch: str, class_id: int = None):
+        self.model_path = str(model_path)
+        self.arch = arch
+        self.class_id = class_id
+        self.session = None
+        self.input_name = None
+        self.output_names = None
+        self._load_model()
+    
+    def _load_model(self):
+        """Charge le modèle ONNX avec les bons providers"""
+        providers = ['CPUExecutionProvider']
+        try:
+            self.session = ort.InferenceSession(self.model_path, providers=providers)
+            self.input_name = self.session.get_inputs()[0].name
+            self.output_names = [out.name for out in self.session.get_outputs()]
+            print(f"[OK] Modèle ONNX chargé: {self.model_path}")
+        except Exception as e:
+            print(f"[ERREUR] Impossible de charger {self.model_path}: {e}")
+            raise
+    
+    def predict(self, source, conf=CONF_THRESHOLD, imgsz=MODEL_SIZE, verbose=False):
+        """
+        Prédiction sur une image
+        """
+        from PIL import Image as PILImage
+        
+        if isinstance(source, PILImage.Image):
+            img = source
+        elif isinstance(source, str):
+            img = PILImage.open(source)
+        elif isinstance(source, np.ndarray):
+            img = PILImage.fromarray(source)
+        else:
+            raise ValueError(f"Type de source non supporté: {type(source)}")
+        
+        # Redimensionner à la taille attendue par le modèle (640x640)
+        img_resized = img.resize((imgsz, imgsz), PILImage.LANCZOS)
+        img_array = np.array(img_resized).astype(np.float32) / 255.0
+        img_array = img_array.transpose(2, 0, 1)
+        img_array = np.expand_dims(img_array, axis=0)
+        
+        outputs = self.session.run(self.output_names, {self.input_name: img_array})
+        
+        return ONNXRuntimeResults(outputs, self.arch, self.class_id, conf)
 
 
 class ModelCache:
@@ -25,33 +181,31 @@ class ModelCache:
             raise ValueError(f"Classe inconnue: {class_name}")
 
         if class_name not in self._cache:
-            from ultralytics import YOLO, RTDETR
-
             cfg = MODEL_MAP[class_name]
-            model_path = Path(cfg["path"])
+            model_path = cfg["path"]
+            arch = cfg["arch"]
+            class_id = cfg.get("class_id")
 
             if not model_path.exists():
                 raise FileNotFoundError(f"Modèle introuvable: {model_path}")
 
-            if cfg["arch"] == "rtdetr":
-                self._cache[class_name] = RTDETR(str(model_path))
-            else:
-                self._cache[class_name] = YOLO(str(model_path))
-
-            print(f"[OK] Modèle chargé: {class_name} -> {model_path}")
+            self._cache[class_name] = ONNXModelWrapper(model_path, arch, class_id)
+            print(f"[OK] Modèle ONNX chargé: {class_name}")
 
         return self._cache[class_name]
 
 
 def pil_to_b64(img: Image.Image) -> str:
+    """Convertit une image PIL en base64"""
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def get_image_paths(class_name: str):
-    folder = IMAGE_DIR / class_name / "images"
-
+    """Récupère tous les chemins d'images pour une classe"""
+    folder_name = MODEL_MAP[class_name].get("image_folder", class_name)
+    folder = IMAGE_DIR / folder_name / "images"
     return (
         list(folder.glob("*.jpg")) +
         list(folder.glob("*.jpeg")) +
@@ -60,15 +214,21 @@ def get_image_paths(class_name: str):
 
 
 def class_has_images(class_name: str) -> bool:
+    """Vérifie si une classe a des images disponibles"""
     return bool(get_image_paths(class_name))
 
 
-def load_random_images(class_name: str, n: int, size=(IMG_SIZE, IMG_SIZE)):
+def load_random_images(class_name: str, n: int, size=None):
+    """
+    Charge n images aléatoires d'une classe
+    size: tuple (largeur, hauteur) ou None pour garder la taille originale
+    """
     paths = get_image_paths(class_name)
 
     if not paths:
+        folder_name = MODEL_MAP[class_name].get("image_folder", class_name)
         raise FileNotFoundError(
-            f"Aucune image trouvée dans: {IMAGE_DIR / class_name / 'images'}"
+            f"Aucune image trouvée dans: {IMAGE_DIR / folder_name / 'images'}"
         )
 
     if len(paths) < n:
@@ -80,10 +240,13 @@ def load_random_images(class_name: str, n: int, size=(IMG_SIZE, IMG_SIZE)):
     items = []
 
     for p in selected:
-        img = Image.open(p).convert("RGB").resize(size, Image.LANCZOS)
+        img = Image.open(p).convert("RGB")
+        if size is not None:
+            img = img.resize(size, Image.LANCZOS)
 
         items.append({
             "path": str(p),
+            "source_class": class_name,
             "pil": img,
             "b64": pil_to_b64(img),
         })
@@ -92,6 +255,7 @@ def load_random_images(class_name: str, n: int, size=(IMG_SIZE, IMG_SIZE)):
 
 
 def load_distractor_image(exclude_class: str):
+    """Charge une image distracteur d'une autre classe"""
     other_classes = [
         c for c in CLASSES
         if c != exclude_class and class_has_images(c)
@@ -102,68 +266,13 @@ def load_distractor_image(exclude_class: str):
             "Il faut ajouter des images dans au moins deux classes pour générer un CAPTCHA."
         )
 
-    return load_random_images(random.choice(other_classes), 1)[0]
+    random_class = random.choice(other_classes)
+    return load_random_images(random_class, 1, size=None)[0]
 
 
-def load_random_large_image(class_name: str):
-    paths = get_image_paths(class_name)
-
-    if not paths:
-        raise FileNotFoundError(
-            f"Aucune image trouvée dans: {IMAGE_DIR / class_name / 'images'}"
-        )
-
-    p = random.choice(paths)
-
-    img = Image.open(p).convert("RGB").resize(
-        (TILE_SIZE * GRID_COLS_4X4, TILE_SIZE * GRID_ROWS_4X4),
-        Image.LANCZOS
-    )
-
-    return {
-        "path": str(p),
-        "pil": img,
-    }
-
-
-def normalize_name(name: str) -> str:
-    return name.lower().strip().replace(" ", "_").replace("-", "_")
-
-
-def detect(model, img: Image.Image, target_class: str) -> bool:
-    results = model.predict(source=img, conf=CONF_THRESHOLD, verbose=False)
-
-    for r in results:
-        for box in r.boxes:
-            detected_name = normalize_name(r.names[int(box.cls)])
-
-            if detected_name == target_class:
-                return True
-
-    return False
-
-
-def detect_in_tiles(model, img: Image.Image, target_class: str):
-    correct_indices = []
-
-    width, height = img.size
-    tile_w = width // GRID_COLS_4X4
-    tile_h = height // GRID_ROWS_4X4
-
-    for row in range(GRID_ROWS_4X4):
-        for col in range(GRID_COLS_4X4):
-            left = col * tile_w
-            top = row * tile_h
-            right = left + tile_w
-            bottom = top + tile_h
-
-            tile = img.crop((left, top, right, bottom))
-
-            if detect(model, tile, target_class):
-                index = row * GRID_COLS_4X4 + col
-                correct_indices.append(index)
-
-    return correct_indices
+def load_smart_distractor(target_class: str):
+    """Version simplifiée - retourne un distracteur aléatoire"""
+    return load_distractor_image(target_class)
 
 
 class CaptchaEngine:
@@ -171,17 +280,15 @@ class CaptchaEngine:
         self.models = ModelCache()
 
     def available_classes(self):
+        """Retourne la liste des classes disponibles"""
         return [c for c in CLASSES if class_has_images(c)]
 
     def build_challenge(self):
-        challenge_type = random.choice(["3x3", "4x4"])
+        """Génère un nouveau challenge CAPTCHA"""
+        return self.build_challenge_3x3()
 
-        if challenge_type == "3x3":
-            return self.build_challenge_3x3()
-
-        return self.build_challenge_4x4()
-
-    def build_challenge_3x3(self):
+    def build_challenge_3x3(self, attempt: int = 1):
+        """Génère un CAPTCHA 3x3 (9 images)"""
         available = self.available_classes()
 
         if len(available) < 2:
@@ -190,36 +297,33 @@ class CaptchaEngine:
             )
 
         target_class = random.choice(available)
-        model = self.models.get(target_class)
         label_fr = MODEL_MAP[target_class]["label_fr"]
 
-        n_positive = random.randint(3, 5)
+        n_positive = 4
 
-        positives = load_random_images(target_class, n_positive)
-
+        # Charger les images originales (SANS redimensionnement pour le modèle)
+        positives = load_random_images(target_class, n_positive, size=None)
         distractors = [
-            load_distractor_image(target_class)
+            load_smart_distractor(target_class)
             for _ in range(9 - n_positive)
         ]
 
         cells = positives + distractors
         random.shuffle(cells)
 
-        correct_indices = []
         images = []
+        correct_indices = []
+        debug_classes = []
 
         for i, item in enumerate(cells):
-            images.append(item["b64"])
+            # Redimensionner pour l'affichage en 640x640 (même taille que le modèle)
+            img = item["pil"]
+            img_display = img.resize((DISPLAY_SIZE, DISPLAY_SIZE), Image.LANCZOS)
+            images.append(pil_to_b64(img_display))
+            debug_classes.append(item.get("source_class"))
 
-            if detect(model, item["pil"], target_class):
+            if item.get("source_class") == target_class:
                 correct_indices.append(i)
-
-        if not correct_indices:
-            for i, item in enumerate(cells):
-                image_parent_class = Path(item["path"]).parent.parent.name
-
-                if image_parent_class == target_class:
-                    correct_indices.append(i)
 
         return {
             "id": str(uuid.uuid4()),
@@ -230,50 +334,12 @@ class CaptchaEngine:
             "images": images,
             "grid_size": {"cols": 3, "rows": 3},
             "correct_indices": correct_indices,
+            "debug_classes": debug_classes,
         }
 
-    def build_challenge_4x4(self):
-        available = self.available_classes()
 
-        if len(available) < 1:
-            raise RuntimeError(
-                "Ajoute des images dans au moins un dossier dataset/<classe>/images."
-            )
+engine = CaptchaEngine()
 
-        target_class = random.choice(available)
-        model = self.models.get(target_class)
-        label_fr = MODEL_MAP[target_class]["label_fr"]
 
-        large = load_random_large_image(target_class)
-        img = large["pil"]
-
-        images = []
-
-        tile_w = img.size[0] // GRID_COLS_4X4
-        tile_h = img.size[1] // GRID_ROWS_4X4
-
-        for row in range(GRID_ROWS_4X4):
-            for col in range(GRID_COLS_4X4):
-                left = col * tile_w
-                top = row * tile_h
-                right = left + tile_w
-                bottom = top + tile_h
-
-                tile = img.crop((left, top, right, bottom))
-                images.append(pil_to_b64(tile))
-
-        correct_indices = detect_in_tiles(model, img, target_class)
-
-        if not correct_indices:
-            correct_indices = [5, 6, 9, 10]
-
-        return {
-            "id": str(uuid.uuid4()),
-            "type": 2,
-            "target_class": target_class,
-            "label_fr": label_fr,
-            "instruction": f"Sélectionnez toutes les cases contenant des {label_fr}",
-            "images": images,
-            "grid_size": {"cols": 4, "rows": 4},
-            "correct_indices": correct_indices,
-        }
+def generate_challenge():
+    return engine.build_challenge()
