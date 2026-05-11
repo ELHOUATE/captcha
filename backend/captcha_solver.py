@@ -242,23 +242,18 @@ class CaptchaSolver:
             return False
 
     def _get_threshold_for_class(self, target: str, is_grid_4x4: bool) -> float:
-        """Seuils adaptés pour chaque classe et type de grille"""
-        if target == "car":
-            return 0.45 if is_grid_4x4 else 0.50
-        elif target == "bus":
-            return 0.60 if is_grid_4x4 else 0.65
-        elif target == "bicycle":
-            return 0.45 if is_grid_4x4 else 0.60
-        elif target == "motorcycle":
-            return 0.45 if is_grid_4x4 else 0.60
-        elif target == "traffic_light":
-            return 0.45 if is_grid_4x4 else 0.55
-        elif target == "stop_sign":
-            return 0.50
-        elif target == "fire_hydrant":
-            return 0.50
-        else:
-            return self.confidence_threshold
+        CLASS_THRESHOLDS = {
+            "car": 0.65,
+            "bus": 0.75,
+            "truck": 0.75,
+            "bicycle": 0.75,
+            "motorcycle": 0.55,
+            "traffic_light": 0.65,
+            "stop_sign": 0.70,
+            "fire_hydrant": 0.40,
+        }
+
+        return CLASS_THRESHOLDS.get(target, self.confidence_threshold)
 
     def _solve_single_round(self, driver, cells, target, is_grid_4x4, round_num=1) -> List[int]:
         current_threshold = self._get_threshold_for_class(target, is_grid_4x4)
@@ -278,14 +273,8 @@ class CaptchaSolver:
         self._last_predictions = predictions
 
         if len(to_click) == 0:
-            lower_threshold = max(0.35, current_threshold - 0.10)
-            if lower_threshold < current_threshold:
-                self._log(f"   🔄 Re-test seuil={lower_threshold:.2f}")
-                predictions2 = self.classifier.predict_batch(images, target, confidence_threshold=lower_threshold)
-                to_click = [i for i, (contains, _) in enumerate(predictions2) if contains]
-                self._last_predictions = predictions2
-                if to_click:
-                    self._log(f"   ✅ {len(to_click)} cellule(s) après ajustement")
+            self._log("⚠️ Aucune cellule positive avec le seuil actuel")
+            return []
 
         return to_click
 

@@ -1,8 +1,9 @@
-# api.py - Version avec logs détaillés
+# api.py - Version avec proxy
 import sys
 import os
 import time
 import traceback
+import random
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,9 +20,22 @@ from captcha_solver import solve_captcha
 app = Flask(__name__)
 CORS(app)
 
+# ⭐ Liste de proxies (optionnel)
+PROXIES = [
+    # Ajoutez vos proxies ici
+    # "http://user:pass@ip:port",
+]
+
+def get_random_proxy():
+    if PROXIES:
+        return random.choice(PROXIES)
+    return None
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok", "service": "reCAPTCHA Solver"})
+
 
 @app.route('/solve', methods=['GET', 'POST'])
 def solve():
@@ -38,13 +52,28 @@ def solve():
     print(f"🔍 Nouvelle requête: {url}")
     print(f"{'='*60}")
     
+    driver = None
     try:
         print("🚀 1. Configuration du navigateur...")
         options = Options()
+        
+        # ⭐ Configuration du proxy
+        proxy = get_random_proxy()
+        if proxy:
+            print(f"   Utilisation du proxy: {proxy}")
+            options.add_argument(f'--proxy-server={proxy}')
+        
+        # Options anti-détection
         options.add_argument("--window-size=1280,900")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36")
         
         print("🚀 2. Lancement de Chrome...")
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
@@ -68,10 +97,6 @@ def solve():
             except Exception as e:
                 print(f"⚠️ Erreur token: {e}")
         
-        print("🚀 8. Fermeture du navigateur...")
-        driver.quit()
-        
-        print(f"📊 9. Retour: success={success}")
         return jsonify({
             "success": success, 
             "token": token,
@@ -82,7 +107,17 @@ def solve():
         print(f"❌ ERREUR: {e}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+        
+    finally:
+        if driver:
+            print("🚀 8. Fermeture du navigateur...")
+            driver.quit()
+
 
 if __name__ == '__main__':
-    print("🚀 API démarrée sur http://0.0.0.0:5000")
+    print("="*60)
+    print("🚀 reCAPTCHA Solver API")
+    print("="*60)
+    print("🌐 API démarrée sur http://0.0.0.0:5000")
+    print("="*60)
     app.run(host='0.0.0.0', port=5000, debug=False)
